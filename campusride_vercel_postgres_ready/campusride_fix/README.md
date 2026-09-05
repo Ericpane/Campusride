@@ -1,4 +1,4 @@
-# CampusRide OR MVP — System-planned revenue-max trips
+# CampusRide MVP — System-planned revenue-max trips
 
 **Live deployment:** https://campusridefix.vercel.app/
 
