@@ -1,1 +1,0 @@
-"""CampusRide Django project package."""
