@@ -3,24 +3,17 @@ Task 3 — business-logic correctness of the optimizer.
 
 Decisions documented here (not silently skipped):
 
-1. Multi-stop route quality vs 2-opt refinement
-   matching.marginal_detour_meters scores each rider against the *fixed*
-   driver→anchor leg only. _greedy_select / _milp_select therefore rank
-   riders independently; _build_route then orders stops nearest-first
-   *after* selection, with no feedback into who was chosen.
+1. Primary objective is fuel per passenger-mile (not revenue).
+   _select_best_pack enumerates subsets of size ≤ seats, scores each with
+   score_pack ( -fuel/pax-km + fill − directness ), and accepts the best.
+   Revenue remains a settlement metric via equal-split fares.
 
-   For MVP with DEFAULT_TOTAL_SEATS = 3 the maximum simultaneous shared
-   riders is 3, so the combined route has at most 1 driver start + 3
-   pickups + 3 dropoffs + 1 anchor. Nearest-neighbour ordering is an
-   acceptable simplification at this scale: full 2-opt / insertion-cost
-   re-evaluation would add complexity without a clear revenue gain on
-   3-seat campus hops. This is an explicit MVP scope decision, not an
-   oversight. If seat capacity rises or campus diameter grows, revisit.
+2. Routing: all pickups (NN) then all dropoffs (NN), improved by
+   precedence-respecting 2-opt. Matching still filters feasibility against
+   the fixed driver→anchor leg before selection.
 
-2. expected_revenue consistency
-   _milp_select, _greedy_select, and the final recompute in optimize_trip
-   all call the same fares.expected_revenue(). Tests below assert the
-   values agree rather than assuming it.
+3. Legacy _greedy_select / _milp_select are revenue fallbacks and still
+   share fares.expected_revenue() for reporting consistency.
 """
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -30,6 +23,8 @@ from rides.optimizer import (
     _build_route,
     _greedy_select,
     _milp_select,
+    _select_best_pack,
+    score_pack,
     optimize_trip,
 )
 from rides.fares import expected_revenue, trip_revenue_pool
@@ -80,7 +75,7 @@ class OptimizerRevenueConsistencyTests(TestCase):
         )
 
     def test_expected_revenue_same_for_milp_greedy_and_final(self):
-        """Handoff requirement: check, don't assume, that all three paths agree."""
+        """Legacy revenue paths still agree; pack optimizer also accepts riders."""
         r1 = self._make_request("r1", (7.4440, 3.8975), self.faculty, p_board=0.9)
         r2 = self._make_request("r2", (7.4445, 3.8980), self.faculty, p_board=0.7)
         candidates = [r1, r2]
@@ -95,7 +90,7 @@ class OptimizerRevenueConsistencyTests(TestCase):
             expected_revenue(milp, use_p_board=True),
         )
 
-        # Run full optimize and confirm stored expected_revenue matches
+        # Run full optimize (fuel pack) and confirm stored expected_revenue matches
         # a direct call on the accepted set.
         optimize_trip(self.trip)
         self.trip.refresh_from_db()
@@ -107,6 +102,25 @@ class OptimizerRevenueConsistencyTests(TestCase):
             expected_revenue(accepted, use_p_board=True),
             places=2,
         )
+        self.assertIn("fuel/pax-km", self.trip.plan_explanation)
+
+    def test_pack_prefers_lower_fuel_per_pax_km(self):
+        """Two co-located riders share route → better fuel/pax-km than one alone."""
+        near_a = self._make_request("na", (7.4440, 3.8975), self.faculty, p_board=0.9)
+        near_b = self._make_request("nb", (7.4441, 3.8976), self.faculty, p_board=0.9)
+        solo_meta = score_pack(self.trip, [near_a])
+        pair_meta = score_pack(self.trip, [near_a, near_b])
+        self.assertLess(pair_meta["fuel_per_pax_km"], solo_meta["fuel_per_pax_km"])
+        self.assertGreater(pair_meta["score"], solo_meta["score"])
+
+    def test_select_best_pack_respects_seats(self):
+        reqs = [
+            self._make_request(f"p{i}", (7.4440 + i * 0.0001, 3.8975), self.faculty)
+            for i in range(5)
+        ]
+        selected, meta = _select_best_pack(self.trip, reqs, seats=2)
+        self.assertLessEqual(len(selected), 2)
+        self.assertEqual(meta["method"], "pack_fuel")
 
     def test_greedy_respects_seat_cap(self):
         reqs = [
