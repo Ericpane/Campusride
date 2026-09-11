@@ -1,4 +1,9 @@
-"""Shared-fare pricing for revenue-maximizing trip plans."""
+"""Shared-fare pricing for trip plans (settlement rule, not optimizer objective).
+
+Fares are split equally among riders on a trip. The optimizer maximizes
+fuel efficiency (passenger-km per unit fuel); this module only prices the
+resulting trip so drivers and riders can settle.
+"""
 from .geofence import haversine_distance
 from .constants import DEFAULT_FARE_PER_KM
 
@@ -33,8 +38,8 @@ def calculate_fare(pickup_lat, pickup_lng, drop_lat, drop_lng):
 def trip_revenue_pool(requests):
     """
     Total trip revenue pot (₦) for a set of RideRequest-like objects.
-    MVP rule: sum of each rider's direct pickup→destination leg fare,
-    then the pot is what gets shared — optimizer maximizes this total.
+    Rule: sum of each rider's direct pickup→destination leg fare; the pot
+    is shared equally. Used for settlement and reporting, not selection.
     """
     pool = 0.0
     for req in requests:
@@ -58,7 +63,7 @@ def calculate_fare_for_share(total_fare, num_riders):
 def expected_revenue(requests, use_p_board=True):
     """
     Expected collected revenue ≈ sum(leg_fare_i * p_board_i).
-    Used as Optimize objective (maximize).
+    Reporting metric only; selection uses fuel_per_pax_km.
     """
     total = 0.0
     for req in requests:
